@@ -1,6 +1,17 @@
+from micropython import const
 import machine, sdcard, uos 
 import sx1262
 import utime 
+import _thread
+from collections import deque
+
+# CONSTANTS
+FLUSH_DELAY = const(1000) # 1 second
+GPS_SAMPLE_TIME = const(10000) # 10 seconds
+            
+# FRAME TYPES
+FRAME_LOG = const(0)
+FRAME_GPS = const(1)
 
 class SD:
     def __init__(self):
@@ -9,18 +20,29 @@ class SD:
                                 sck=machine.Pin(6),
                                 miso=machine.Pin(4)) #SPI 0 mosi=7, SCK=6, CS=5, miso=4
         self.sd = sdcard.SDCard(self.spi, machine.Pin(5))
+        self.log_buffer = deque((), 100)
         uos.mount(self.sd, '/sd', readonly=False)
-        print("SD Card mounted")
+        print("INFO:SD Card mounted")
 
     def sd_write_data(self, data):
         with open('/sd/data.txt', 'a') as f:
             f.write(data + '\n')
         print("Data written to SD Card")
         
-    def sd_write_log(self):
+    def sd_flush_log(self):
         with open('/sd/log.txt', 'a') as f:
-            f.write("Log data" + '\n')
-        print("Log written to SD Card")
+            while True:
+                try:
+                    line = self.log_buffer.popleft() # Try to fetch one line
+                    f.write(line + '\n')
+                except IndexError:
+                    break
+
+    def new_log(self, frame_type, data):
+        timestamp = utime.ticks_ms()
+        log = f"{timestamp}|{frame_type}|{data}"
+        self.log_buffer.append(log)
+        print(f"LOG:{log}")
 
 class Lora:
     def __init__(self):
@@ -55,7 +77,6 @@ class GPS:
         
     
     def convertToDegree(self, RawDegrees):
-        
         RawAsFloat = float(RawDegrees)
         firstdigits = int(RawAsFloat/100) 
         nexttwodigits = RawAsFloat - float(firstdigits*100) 
@@ -64,8 +85,9 @@ class GPS:
         Converted = '{0:.6f}'.format(Converted) 
         return str(Converted)    
     
-    def getGPS(self):
+    def getGPS(self) -> str | None:
         timeout = utime.time() + 8 
+        self.TIMEOUT = False
         while True:
             self.uart.readline()
             self.buffer = str(self.uart.readline())
@@ -90,6 +112,13 @@ class GPS:
                 self.TIMEOUT = True
                 break
             utime.sleep_ms(500)
+        return self.lastGPSFrame()
+    
+    def lastGPSFrame(self) -> str | None:
+        if self.TIMEOUT == True:
+            return None
+        else:
+            return f"{self.latitude}|{self.longitude}|{self.GPStime}"
     
     def printGPS(self):
         if(self.FIX_STATUS == True):
@@ -101,18 +130,38 @@ class GPS:
             print(f"Time: {self.GPStime}")
             print("----------------------")
             
-            #FIX_STATUS = False
-            
         if(self.TIMEOUT == True):
             print("No GPS data is found.")
-            self.TIMEOUT = False
-            
 
+
+def sd_flush_logs_loop():
+    last_flush = 0
+    while True:
+        if utime.ticks_ms()-last_flush > FLUSH_DELAY: # Flush every seconds
+            sd.sd_flush_log()
+            last_flush = utime.ticks_ms()
+
+def gps_fetch_loop():
+    last_loop = 0
+    while True:
+        if utime.ticks_ms()-last_loop > GPS_SAMPLE_TIME: # Flush every seconds
+            gps_frame = gps.getGPS()
+            if gps_frame is not None:
+                sd.new_log(FRAME_GPS, gps_frame)
+            else:
+                sd.new_log(FRAME_LOG, "No GPS data found!")
+            last_loop = utime.ticks_ms()
 
 def main():
-    print("Hello World!")
+    sd.new_log(FRAME_LOG, "Start HUB module!")
     
 
+# STATIC INITIALIZATION
+sd = SD()
+lora = Lora()
+gps = GPS()
 
 if __name__ == "__main__":
-    main()  
+    _thread.start_new_thread(sd_flush_logs_loop, ())
+    _thread.start_new_thread(sd_flush_logs_loop, ())
+    main() 
