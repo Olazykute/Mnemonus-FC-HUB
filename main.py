@@ -1,5 +1,5 @@
 from micropython import const
-import machine, sdcard, uos 
+import machine, uos 
 import sx1262
 import utime 
 import _thread
@@ -13,7 +13,33 @@ GPS_SAMPLE_TIME = const(10000) # 10 seconds
 FRAME_LOG = const(0)
 FRAME_GPS = const(1)
 
-class SD:
+
+class Data:
+    def __init__(self):
+        self.log_buffer = deque((), 100)
+
+    def write_data(self, data):
+            with open('data.txt', 'a') as f:
+                f.write(data + '\n')
+            print("Data written to file")
+            
+    def flush_log(self):
+            with open('log.txt', 'a') as f:
+                while True:
+                    try:
+                        line = self.log_buffer.popleft() # Try to fetch one line
+                        f.write(line + '\n')
+                    except IndexError:
+                        break
+                    
+    def new_log(self, frame_type, data):
+        timestamp = utime.ticks_ms()
+        log = f"{timestamp}|{frame_type}|{data}"
+        self.log_buffer.append(log)
+        print(f"LOG:{log}")
+
+""" 
+class SD: #Deprecated until SPI bug is fixed
     def __init__(self):
         self.spi = machine.SPI(0, baudrate=100000, polarity=0, phase=0,    
                                 mosi=machine.Pin(7),
@@ -43,6 +69,7 @@ class SD:
         log = f"{timestamp}|{frame_type}|{data}"
         self.log_buffer.append(log)
         print(f"LOG:{log}")
+"""
 
 class Lora:
     def __init__(self):
@@ -66,7 +93,7 @@ class Lora:
         
 class GPS:
     def __init__(self):
-        self.uart = machine.UART(1, baudrate=9600, tx=8, rx=9) #UART 2 tx=8, rx=9
+        self.uart = machine.UART(1, baudrate=9600, tx=machine.Pin(8), rx=machine.Pin(9)) #UART 2 tx=8, rx=9
         self.TIMEOUT = False
         self.FIX_STATUS = False
         self.latitude = ""
@@ -134,11 +161,11 @@ class GPS:
             print("No GPS data is found.")
 
 
-def sd_flush_logs_loop():
+def flush_logs_loop():
     last_flush = 0
     while True:
         if utime.ticks_ms()-last_flush > FLUSH_DELAY: # Flush every seconds
-            sd.sd_flush_log()
+            data.flush_log()
             last_flush = utime.ticks_ms()
 
 def gps_fetch_loop():
@@ -147,21 +174,22 @@ def gps_fetch_loop():
         if utime.ticks_ms()-last_loop > GPS_SAMPLE_TIME: # Flush every seconds
             gps_frame = gps.getGPS()
             if gps_frame is not None:
-                sd.new_log(FRAME_GPS, gps_frame)
+                data.new_log(FRAME_GPS, gps_frame)
             else:
-                sd.new_log(FRAME_LOG, "No GPS data found!")
+                data.new_log(FRAME_LOG, "No GPS data found!")
             last_loop = utime.ticks_ms()
 
 def main():
-    sd.new_log(FRAME_LOG, "Start HUB module!")
+    data.new_log(FRAME_LOG, "Start HUB module!")
     
 
 # STATIC INITIALIZATION
-sd = SD()
+data = Data()
 lora = Lora()
 gps = GPS()
 
 if __name__ == "__main__":
-    _thread.start_new_thread(sd_flush_logs_loop, ())
-    _thread.start_new_thread(sd_flush_logs_loop, ())
+    gps_fetch_loop()
+    _thread.start_new_thread(flush_logs_loop, ())  
+    
     main() 
