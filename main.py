@@ -1,4 +1,3 @@
-from micropython import const
 import machine, uos 
 import sx1262
 import utime 
@@ -6,8 +5,8 @@ import _thread
 from collections import deque
 
 # CONSTANTS
-FLUSH_DELAY = const(1000) # 1 second
-GPS_SAMPLE_TIME = const(10000) # 10 seconds
+FLUSH_DELAY = const(1000) # 10 seconds
+GPS_SAMPLE_TIME = const(400) # 400 milli
             
 # FRAME TYPES
 FRAME_LOG = const(0)
@@ -17,7 +16,9 @@ FRAME_GPS = const(1)
 class Data:
     def __init__(self):
         self.log_buffer = deque((), 100)
-
+        open('data.txt', 'w').close() # Clear data file
+        open('log.txt', 'w').close() # Clear log file
+        
     def write_data(self, data):
             with open('data.txt', 'a') as f:
                 f.write(data + '\n')
@@ -93,7 +94,7 @@ class Lora:
         
 class GPS:
     def __init__(self):
-        self.uart = machine.UART(1, baudrate=9600, tx=machine.Pin(8), rx=machine.Pin(9)) #UART 2 tx=8, rx=9
+        self.uart = machine.UART(1, baudrate=9600, tx=machine.Pin(8,machine.Pin.OUT), rx=machine.Pin(9,machine.Pin.IN), timeout = 100) #UART 1 tx=8, rx=9
         self.TIMEOUT = False
         self.FIX_STATUS = False
         self.latitude = ""
@@ -102,7 +103,6 @@ class GPS:
         self.GPStime = ""
         self.buffer = bytearray(255)
         
-    
     def convertToDegree(self, RawDegrees):
         RawAsFloat = float(RawDegrees)
         firstdigits = int(RawAsFloat/100) 
@@ -113,7 +113,7 @@ class GPS:
         return str(Converted)    
     
     def getGPS(self) -> str | None:
-        timeout = utime.time() + 8 
+        timeout = utime.time() +8
         self.TIMEOUT = False
         while True:
             self.uart.readline()
@@ -121,15 +121,12 @@ class GPS:
             parts = self.buffer.split(',')
         
             if (parts[0] == "b'$GPGGA" and len(parts) == 15):
+                
                 if(parts[1] and parts[2] and parts[3] and parts[4] and parts[5] and parts[6] and parts[7]):
                     print(self.buffer)
                     
-                    self.latitude = self.convertToDegree(parts[2])
-                    if (parts[3] == 'S'):
-                        self.latitude = "-" + self.latitude
-                    self.longitude = self.convertToDegree(parts[4])
-                    if (parts[5] == 'W'):
-                        self.longitude = "-" + self.longitude
+                    self.latitude = self.convertToDegree(parts[2]) + parts[3]
+                    self.longitude = self.convertToDegree(parts[4]) + parts[5]
                     self.satellites = parts[7]
                     self.GPStime = parts[1][0:2] + ":" + parts[1][2:4] + ":" + parts[1][4:6]
                     self.FIX_STATUS = True
@@ -138,7 +135,7 @@ class GPS:
             if (utime.time() > timeout):
                 self.TIMEOUT = True
                 break
-            utime.sleep_ms(500)
+            
         return self.lastGPSFrame()
     
     def lastGPSFrame(self) -> str | None:
@@ -171,7 +168,7 @@ def flush_logs_loop():
 def gps_fetch_loop():
     last_loop = 0
     while True:
-        if utime.ticks_ms()-last_loop > GPS_SAMPLE_TIME: # Flush every seconds
+        if utime.ticks_ms()-last_loop > GPS_SAMPLE_TIME: # Fetch every 400 milliseconds
             gps_frame = gps.getGPS()
             if gps_frame is not None:
                 data.new_log(FRAME_GPS, gps_frame)
@@ -180,16 +177,31 @@ def gps_fetch_loop():
             last_loop = utime.ticks_ms()
 
 def main():
-    data.new_log(FRAME_LOG, "Start HUB module!")
+    data.new_log(FRAME_LOG, "Start HUB module!")  
+    gps_fetch_loop()
+    """ 
+    print(gps.uart)
+    while True:
+        print(gps.uart.readline())  
+    """ 
+    """
+    while True:
+        gps_frame = gps.getGPS()
+        if gps_frame is not None:
+            data.new_log(FRAME_GPS, gps_frame)
+        else:
+            data.new_log(FRAME_LOG, "No GPS data found!")
     
-
+    """
+ 
+        
+        
 # STATIC INITIALIZATION
 data = Data()
 lora = Lora()
 gps = GPS()
 
 if __name__ == "__main__":
-    gps_fetch_loop()
     _thread.start_new_thread(flush_logs_loop, ())  
     
     main() 
